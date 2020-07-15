@@ -8,3 +8,4 @@ edition = "2018"
 
 [dependencies]
 easycurses="0.13.0"
+libchip8 = {path = "../libchip8"}
