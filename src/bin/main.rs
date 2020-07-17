@@ -1,13 +1,56 @@
 mod render {
 
-    use easycurses::constants::acs;
     use libchip8::cpu;
     use libchip8::display;
     use libchip8::emulator;
-    use std::iter::repeat;
+    use libchip8::input;
 
     use easycurses::Color::*;
     use easycurses::*;
+
+    pub struct Config {
+        present: char,
+        absent: char,
+        color_present: ColorPair,
+        color_absent: ColorPair,
+        display_width: i32,
+        display_height: i32,
+    }
+
+    impl Config {
+        const MAPPING: &'static str = "x123qweasdzc4rfv";
+        const ORIG: &'static str = "123C456D789EA0BF";
+
+        fn new(
+            present: char,
+            absent: char,
+            color_present: ColorPair,
+            color_absent: ColorPair,
+            dw: i32,
+            dh: i32,
+        ) -> Config {
+            Config {
+                present,
+                absent,
+                color_present,
+                color_absent,
+                display_width: dw,
+                display_height: dh,
+            }
+        }
+
+        fn map_base16_to_key(idx: usize) -> Option<char> {
+            Config::MAPPING.chars().nth(idx)
+        }
+
+        fn map_key_to_base16(k: char) -> Option<usize> {
+            Config::MAPPING
+                .char_indices()
+                .find(|(idx, c)| *c == k)
+                .map(|(idx, c)| idx)
+        }
+    }
+
     fn render_line(e: &mut EasyCurses, cp: ColorPair, s: String) {
         e.set_color_pair(cp);
         e.print(s);
@@ -24,6 +67,35 @@ mod render {
             format!("{label:10} ", label = label),
         );
         render_line(e, colorpair!(Yellow on Black), s);
+    }
+
+    fn render_kbd_line(
+        e: &mut EasyCurses,
+        r: i32,
+        c: i32,
+        nums: [i8; 4],
+        kbd: &input::Keyboard,
+        cfg: &Config,
+    ) {
+        for i in 0..4 {
+            let num = nums[i as usize] as usize;
+            e.move_rc(r, c + i * 6);
+            e.set_color_pair(if kbd.get(num as usize) {
+                cfg.color_present
+            } else {
+                cfg.color_absent
+            });
+
+            let key = format!("[{:X}]{} ", num, Config::map_base16_to_key(num).unwrap());
+            e.print(key);
+        }
+    }
+
+    fn render_keyboard(e: &mut EasyCurses, r: i32, c: i32, kbd: &input::Keyboard, cfg: &Config) {
+        render_kbd_line(e, r, c, [1, 2, 3, 0xC], kbd, cfg);
+        render_kbd_line(e, r + 1, c, [4, 5, 6, 0xD], kbd, cfg);
+        render_kbd_line(e, r + 2, c, [7, 8, 9, 0xE], kbd, cfg);
+        render_kbd_line(e, r + 3, c, [0xA, 0, 0xB, 0xF], kbd, cfg);
     }
 
     fn render_cpu(e: &mut EasyCurses, r: i32, c: i32, cpu: &cpu::CPU) {
@@ -60,35 +132,6 @@ mod render {
         );
         e.move_rc(r + 1, c);
         part_str(e, "opcode", format!("{:?}", cpu.instr));
-    }
-
-    pub struct Config {
-        present: char,
-        absent: char,
-        color_present: ColorPair,
-        color_absent: ColorPair,
-        display_width: i32,
-        display_height: i32,
-    }
-
-    impl Config {
-        fn new(
-            present: char,
-            absent: char,
-            color_present: ColorPair,
-            color_absent: ColorPair,
-            dw: i32,
-            dh: i32,
-        ) -> Config {
-            Config {
-                present,
-                absent,
-                color_present,
-                color_absent,
-                display_width: dw,
-                display_height: dh,
-            }
-        }
     }
 
     fn render_frame(e: &mut EasyCurses, r: i32, c: i32, conf: &Config) {
@@ -148,6 +191,7 @@ mod render {
 
     pub fn chip_loop(ch: &mut emulator::Emulator, c: &Config) {
         let mut step_count = 0;
+        let mut oldk: Option<usize> = None;
         let x0 = 10;
         let y0 = 1;
         let cpu_width = 40;
@@ -160,12 +204,22 @@ mod render {
                 let (r, _) = e.get_row_col_count();
                 render_cpu(&mut e, y0, x0, &(*ch).cpu);
                 render_display(&mut e, y0 + 1, x0 + cpu_width + 1, &(*ch).scr, c);
+                render_keyboard(&mut e, r - 2 - 5, x0, &ch.kbd, c);
                 render_step(&mut e, r - 2, x0, step_count);
+
                 e.refresh();
+
                 if let Some(ip) = e.get_input() {
                     step_count += 1;
-                    if ip == Input::Character('q') {
-                        break;
+                    match ip {
+                        Input::Character(',') => break,
+                        Input::Character(key) => {
+                            if let Some(newk) = Config::map_key_to_base16(key) {
+                                ch.key_pressed(oldk, newk);
+                                oldk = Some(newk);
+                            }
+                        }
+                        _ => (),
                     }
                     ch.step();
                 }
