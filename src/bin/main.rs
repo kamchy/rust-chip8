@@ -46,8 +46,8 @@ mod render {
         fn map_key_to_base16(k: char) -> Option<usize> {
             Config::MAPPING
                 .char_indices()
-                .find(|(idx, c)| *c == k)
-                .map(|(idx, c)| idx)
+                .find(|(_, c)| *c == k)
+                .map(|(idx, _)| idx)
         }
     }
 
@@ -58,6 +58,16 @@ mod render {
 
     fn part(e: &mut EasyCurses, label: &str, val: u16) {
         part_str(e, label, format!("0x{:04X} ", val));
+    }
+
+    fn render_labelled(e: &mut EasyCurses, label: &str, s: &str, max_width: usize) {
+        let lab = format!("{label:10} ", label = label);
+        let lablen = lab.len();
+        render_line(e, colorpair!(Green on Black), lab);
+
+        let mut s = String::from(s);
+        s.push_str(&" ".repeat(std::cmp::max(0, max_width - (s.len() + lablen))));
+        render_line(e, colorpair!(Yellow on Black), s);
     }
 
     fn part_str(e: &mut EasyCurses, label: &str, s: String) {
@@ -98,7 +108,7 @@ mod render {
         render_kbd_line(e, r + 3, c, [0xA, 0, 0xB, 0xF], kbd, cfg);
     }
 
-    fn render_cpu(e: &mut EasyCurses, r: i32, c: i32, cpu: &cpu::CPU) {
+    fn render_cpu(e: &mut EasyCurses, r: i32, c: i32, max_width: usize, cpu: &cpu::CPU) {
         let mut r = r;
         e.move_rc(r, c);
         part(e, "PC", cpu.pc);
@@ -131,7 +141,7 @@ mod render {
             },
         );
         e.move_rc(r + 1, c);
-        part_str(e, "opcode", format!("{:?}", cpu.instr));
+        render_labelled(e, "opcode", &format!("{:?}", cpu.instr), max_width);
     }
 
     fn render_frame(e: &mut EasyCurses, r: i32, c: i32, conf: &Config) {
@@ -202,7 +212,7 @@ mod render {
             render_frame(&mut e, y0, x0 + cpu_width, c);
             loop {
                 let (r, _) = e.get_row_col_count();
-                render_cpu(&mut e, y0, x0, &(*ch).cpu);
+                render_cpu(&mut e, y0, x0, cpu_width as usize, &(*ch).cpu);
                 render_display(&mut e, y0 + 1, x0 + cpu_width + 1, &(*ch).scr, c);
                 render_keyboard(&mut e, r - 2 - 5, x0, &ch.kbd, c);
                 render_step(&mut e, r - 2, x0, step_count);
