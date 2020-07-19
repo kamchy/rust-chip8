@@ -8,6 +8,27 @@ mod render {
     use easycurses::Color::*;
     use easycurses::*;
 
+    use std::thread::sleep;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    /// Maps 16-keys chip-8 keyboard to contemporary keyboard layout
+    mod KeyMap {
+        /// i-th character represents key which - when pressed - is mapped to key i in chip-8 kbd
+        const MAPPING: &'static str = "x123qweasdzc4rfv";
+
+        pub(crate) fn map_base16_to_key(idx: usize) -> Option<char> {
+            MAPPING.chars().nth(idx)
+        }
+
+        pub(crate) fn map_key_to_base16(k: char) -> Option<usize> {
+            MAPPING
+                .char_indices()
+                .find(|(_, c)| *c == k)
+                .map(|(idx, _)| idx)
+        }
+    }
+
     pub struct Config {
         present: char,
         absent: char,
@@ -15,39 +36,36 @@ mod render {
         color_absent: ColorPair,
         display_width: i32,
         display_height: i32,
+        x0: i32,
+        y0: i32,
+        cpu_width: i32,
+        cpu_height: i32,
+        kbd_height: i32,
     }
 
     impl Config {
-        const MAPPING: &'static str = "x123qweasdzc4rfv";
-        const ORIG: &'static str = "123C456D789EA0BF";
-
-        fn new(
-            present: char,
-            absent: char,
-            color_present: ColorPair,
-            color_absent: ColorPair,
-            dw: i32,
-            dh: i32,
-        ) -> Config {
-            Config {
-                present,
-                absent,
-                color_present,
-                color_absent,
-                display_width: dw,
-                display_height: dh,
-            }
+        fn display_position(&self) -> (i32, i32) {
+            let r = self.y0 + 1;
+            let c = self.x0 + self.cpu_width + 2;
+            (r, c)
         }
 
-        fn map_base16_to_key(idx: usize) -> Option<char> {
-            Config::MAPPING.chars().nth(idx)
+        fn frame_position(&self) -> (i32, i32) {
+            let r = self.y0;
+            let c = self.x0 + self.cpu_width + 1;
+            (r, c)
         }
 
-        fn map_key_to_base16(k: char) -> Option<usize> {
-            Config::MAPPING
-                .char_indices()
-                .find(|(_, c)| *c == k)
-                .map(|(idx, _)| idx)
+        fn keyboard_position(&self) -> (i32, i32) {
+            let r = self.y0 + self.cpu_height + 1;
+            let c = self.x0;
+            (r, c)
+        }
+
+        fn step_position(&self) -> (i32, i32) {
+            let r = self.y0 + self.cpu_height + self.kbd_height + 2;
+            let c = self.x0;
+            (r, c)
         }
     }
 
@@ -96,20 +114,23 @@ mod render {
                 cfg.color_absent
             });
 
-            let key = format!("[{:X}]{} ", num, Config::map_base16_to_key(num).unwrap());
+            let key = format!("[{:X}]{} ", num, KeyMap::map_base16_to_key(num).unwrap());
             e.print(key);
         }
     }
 
-    fn render_keyboard(e: &mut EasyCurses, r: i32, c: i32, kbd: &input::Keyboard, cfg: &Config) {
+    fn render_keyboard(e: &mut EasyCurses, kbd: &input::Keyboard, cfg: &Config) {
+        let (r, c) = cfg.keyboard_position();
         render_kbd_line(e, r, c, [1, 2, 3, 0xC], kbd, cfg);
         render_kbd_line(e, r + 1, c, [4, 5, 6, 0xD], kbd, cfg);
         render_kbd_line(e, r + 2, c, [7, 8, 9, 0xE], kbd, cfg);
         render_kbd_line(e, r + 3, c, [0xA, 0, 0xB, 0xF], kbd, cfg);
     }
 
-    fn render_cpu(e: &mut EasyCurses, r: i32, c: i32, max_width: usize, cpu: &cpu::CPU) {
-        let mut r = r;
+    fn render_cpu(e: &mut EasyCurses, cpu: &cpu::CPU, cfg: &Config) {
+        let mut r = cfg.y0;
+        let c = cfg.x0;
+
         e.move_rc(r, c);
         part(e, "PC", cpu.pc);
 
@@ -141,10 +162,16 @@ mod render {
             },
         );
         e.move_rc(r + 1, c);
-        render_labelled(e, "opcode", &format!("{:?}", cpu.instr), max_width);
+        render_labelled(
+            e,
+            "opcode",
+            &format!("{:?}", cpu.instr),
+            cfg.cpu_width as usize,
+        );
     }
 
-    fn render_frame(e: &mut EasyCurses, r: i32, c: i32, conf: &Config) {
+    fn render_frame(e: &mut EasyCurses, conf: &Config) {
+        let (r, c) = conf.frame_position();
         let wi = conf.display_width;
         let hi = conf.display_height;
 
@@ -175,7 +202,8 @@ mod render {
         e.print_char('>');
     }
 
-    fn render_display(e: &mut EasyCurses, r: i32, c: i32, d: &display::Screen, cfg: &Config) {
+    fn render_display(e: &mut EasyCurses, d: &display::Screen, cfg: &Config) {
+        let (r, c) = cfg.display_position();
         for y in 0..display::ROWS {
             for x in 0..display::COLS {
                 let bit = d.get(x as u8, y as u8);
@@ -194,7 +222,8 @@ mod render {
         }
     }
 
-    fn render_step(e: &mut EasyCurses, r: i32, c: i32, step: i32) {
+    fn render_step(e: &mut EasyCurses, step: i32, cfg: &Config) {
+        let (r, c) = cfg.step_position();
         e.move_rc(r, c);
         e.print(step.to_string());
     }
@@ -202,20 +231,24 @@ mod render {
     pub fn chip_loop(ch: &mut emulator::Emulator, c: &Config) {
         let mut step_count = 0;
         let mut oldk: Option<usize> = None;
-        let x0 = 10;
-        let y0 = 1;
-        let cpu_width = 40;
+        let mut next_instr = ch.fetch();
+
+        let frame_target_duration = Duration::new(1, 0)
+            .checked_div(60)
+            .expect("failed when rhs!=0, what?");
+
         if let Some(mut e) = EasyCurses::initialize_system() {
             e.set_cursor_visibility(CursorVisibility::Invisible);
             e.set_echo(false);
             e.set_input_mode(InputMode::Character);
-            render_frame(&mut e, y0, x0 + cpu_width, c);
+            render_frame(&mut e, c);
+
             loop {
-                let (r, _) = e.get_row_col_count();
-                render_cpu(&mut e, y0, x0, cpu_width as usize, &(*ch).cpu);
-                render_display(&mut e, y0 + 1, x0 + cpu_width + 1, &(*ch).scr, c);
-                render_keyboard(&mut e, r - 2 - 5, x0, &ch.kbd, c);
-                render_step(&mut e, r - 2, x0, step_count);
+                let top_of_loop = Instant::now();
+                render_cpu(&mut e, &(*ch).cpu, c);
+                render_display(&mut e, &(*ch).scr, c);
+                render_keyboard(&mut e, &ch.kbd, c);
+                render_step(&mut e, step_count, c);
 
                 e.refresh();
 
@@ -224,35 +257,47 @@ mod render {
                     match ip {
                         Input::Character(',') => break,
                         Input::Character(key) => {
-                            if let Some(newk) = Config::map_key_to_base16(key) {
+                            if let Some(newk) = KeyMap::map_key_to_base16(key) {
                                 ch.key_pressed(oldk, newk);
                                 oldk = Some(newk);
                             }
                         }
                         _ => (),
                     }
-                    ch.step();
+                    //ch.step();
+                    if let Some(instr) = next_instr {
+                        ch.exec(instr);
+                        next_instr = ch.fetch();
+                    }
+                }
+
+                let elapsed_this_frame = top_of_loop.elapsed();
+                if let Some(frame_remaining) = frame_target_duration.checked_sub(elapsed_this_frame)
+                {
+                    sleep(frame_remaining);
                 }
             }
         }
     }
 
     pub fn default_config() -> Config {
-        Config::new(
-            '*',
-            '_',
-            ColorPair::new(Yellow, Black),
-            ColorPair::new(Blue, Black),
-            64,
-            32,
-        )
+        Config {
+            present: '*',
+            absent: ' ',
+            color_present: ColorPair::new(Yellow, Black),
+            color_absent: ColorPair::new(Blue, Black),
+            display_width: 64,
+            display_height: 32,
+            x0: 3,
+            y0: 3,
+            cpu_width: 40,
+            cpu_height: 25,
+            kbd_height: 5,
+        }
     }
 }
 
 mod run {
-    use std::thread::sleep;
-    use std::time::Duration;
-    use std::time::Instant;
 
     use crate::render;
     use libchip8::emulator;
