@@ -8,12 +8,13 @@ mod render {
     use easycurses::Color::*;
     use easycurses::*;
 
+    use crate::mode::RunMode;
     use std::thread::sleep;
     use std::time::Duration;
     use std::time::Instant;
 
     /// Maps 16-keys chip-8 keyboard to contemporary keyboard layout
-    mod KeyMap {
+    mod key_map {
         /// i-th character represents key which - when pressed - is mapped to key i in chip-8 kbd
         const MAPPING: &'static str = "x123qweasdzc4rfv";
 
@@ -67,6 +68,12 @@ mod render {
             let c = self.x0;
             (r, c)
         }
+
+        fn dt_st_position(&self) -> (i32, i32) {
+            let r = self.y0 + self.cpu_height + self.kbd_height + 4;
+            let c = self.x0;
+            (r, c)
+        }
     }
 
     fn render_line(e: &mut EasyCurses, cp: ColorPair, s: String) {
@@ -114,7 +121,7 @@ mod render {
                 cfg.color_absent
             });
 
-            let key = format!("[{:X}]{} ", num, KeyMap::map_base16_to_key(num).unwrap());
+            let key = format!("[{:X}]{} ", num, key_map::map_base16_to_key(num).unwrap());
             e.print(key);
         }
     }
@@ -228,7 +235,15 @@ mod render {
         e.print(step.to_string());
     }
 
-    pub fn chip_loop(ch: &mut emulator::Emulator, c: &Config) {
+    fn render_dt_st(e: &mut EasyCurses, dt_st: (u8, u8), cfg: &Config) {
+        let (r, c) = cfg.dt_st_position();
+        e.move_rc(r, c);
+
+        let (dt, st) = dt_st;
+        e.print(format!("Delay: {:5}, Sound time: {:5}", dt, st));
+    }
+
+    pub(crate) fn chip_loop(ch: &mut emulator::Emulator, c: &Config, rm: RunMode) {
         let mut step_count = 0;
         let mut oldk: Option<usize> = None;
         let mut next_instr = ch.fetch();
@@ -241,6 +256,11 @@ mod render {
             e.set_cursor_visibility(CursorVisibility::Invisible);
             e.set_echo(false);
             e.set_input_mode(InputMode::Character);
+            let tm = match rm {
+                RunMode::Stepwise => TimeoutMode::Never,
+                RunMode::Normal => TimeoutMode::Immediate,
+            };
+            e.set_input_timeout(tm);
             render_frame(&mut e, c);
 
             loop {
@@ -252,23 +272,24 @@ mod render {
 
                 e.refresh();
 
+                //                if wait_for_key(&rm, next_instr) {
                 if let Some(ip) = e.get_input() {
-                    step_count += 1;
                     match ip {
                         Input::Character(',') => break,
                         Input::Character(key) => {
-                            if let Some(newk) = KeyMap::map_key_to_base16(key) {
+                            if let Some(newk) = key_map::map_key_to_base16(key) {
                                 ch.key_pressed(oldk, newk);
                                 oldk = Some(newk);
                             }
                         }
                         _ => (),
                     }
-                    //ch.step();
-                    if let Some(instr) = next_instr {
-                        ch.exec(instr);
-                        next_instr = ch.fetch();
-                    }
+                }
+
+                step_count += 1;
+                if let Some(instr) = next_instr {
+                    ch.exec(instr);
+                    next_instr = ch.fetch();
                 }
 
                 let elapsed_this_frame = top_of_loop.elapsed();
@@ -276,13 +297,15 @@ mod render {
                 {
                     sleep(frame_remaining);
                 }
+
+                render_dt_st(&mut e, ch.tick(), c);
             }
         }
     }
 
     pub fn default_config() -> Config {
         Config {
-            present: '*',
+            present: '█',
             absent: ' ',
             color_present: ColorPair::new(Yellow, Black),
             color_absent: ColorPair::new(Blue, Black),
@@ -296,24 +319,64 @@ mod render {
         }
     }
 }
+mod mode {
+    #[derive(Debug, PartialEq)]
+    pub(crate) enum RunMode {
+        Stepwise,
+        Normal,
+    }
 
+    impl std::convert::From<Option<&String>> for RunMode {
+        fn from(s: Option<&String>) -> Self {
+            match s {
+                None => RunMode::Normal,
+                Some(_) => RunMode::Stepwise,
+            }
+        }
+    }
+}
 mod run {
 
+    use crate::mode::RunMode;
     use crate::render;
     use libchip8::emulator;
     use libchip8::loader;
 
-    pub fn emulation(ch: &mut emulator::Emulator, fname: &str) {
+    pub(crate) fn emulation(ch: &mut emulator::Emulator, fname: &str, runmode: RunMode) {
         loader::load(ch, &String::from(fname));
         ch.store_font();
-        render::chip_loop(ch, &render::default_config());
+
+        render::chip_loop(ch, &render::default_config(), runmode);
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn from_none_test() {
+            assert_eq!(RunMode::Normal, RunMode::from(None));
+        }
+
+        #[test]
+        fn from_some_test() {
+            assert_eq!(RunMode::Stepwise, RunMode::from(Some(&String::from("-s"))));
+        }
     }
 }
+
 use libchip8::emulator;
+use mode::RunMode;
 use std::env;
+
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let fname = &args[1];
-    let mut c = emulator::Emulator::new();
-    run::emulation(&mut c, fname);
+    if let Some(fname) = &args.get(1) {
+        let mut c = emulator::Emulator::new();
+
+        let runmode: RunMode = RunMode::from(args.get(2));
+        run::emulation(&mut c, fname, runmode);
+    } else {
+        println!("chip-8 rom file name required");
+    }
 }
