@@ -44,35 +44,36 @@ mod render {
         kbd_height: i32,
     }
 
+    /// Defines a set of xxx_position()
+    /// functions that retur (row, col) tuples
     impl Config {
         fn display_position(&self) -> (i32, i32) {
-            let r = self.y0 + 1;
-            let c = self.x0 + self.cpu_width + 2;
-            (r, c)
+            let (r, c) = self.frame_position();
+            (r + 1, c + 1)
+        }
+
+        fn cpu_position(&self) -> (i32, i32) {
+            (self.y0, self.x0)
         }
 
         fn frame_position(&self) -> (i32, i32) {
-            let r = self.y0;
-            let c = self.x0 + self.cpu_width + 1;
-            (r, c)
+            let (r, c) = self.cpu_position();
+            (r, c + self.cpu_width + 5)
         }
 
         fn keyboard_position(&self) -> (i32, i32) {
-            let r = self.y0 + self.cpu_height + 1;
-            let c = self.x0;
-            (r, c)
+            let (r, c) = self.cpu_position();
+            (r + self.cpu_height, c)
         }
 
         fn step_position(&self) -> (i32, i32) {
-            let r = self.y0 + self.cpu_height + self.kbd_height + 2;
-            let c = self.x0;
-            (r, c)
+            let (r, c) = self.keyboard_position();
+            (r + self.kbd_height, c)
         }
 
         fn dt_st_position(&self) -> (i32, i32) {
-            let r = self.y0 + self.cpu_height + self.kbd_height + 4;
-            let c = self.x0;
-            (r, c)
+            let (r, c) = self.step_position();
+            (r + 1, c)
         }
     }
 
@@ -135,8 +136,7 @@ mod render {
     }
 
     fn render_cpu(e: &mut EasyCurses, cpu: &cpu::CPU, cfg: &Config) {
-        let mut r = cfg.y0;
-        let c = cfg.x0;
+        let (mut r, c) = cfg.cpu_position();
 
         e.move_rc(r, c);
         part(e, "PC", cpu.pc);
@@ -168,7 +168,9 @@ mod render {
                 0
             },
         );
-        e.move_rc(r + 1, c);
+
+        r += 1;
+        e.move_rc(r, c);
         render_labelled(
             e,
             "opcode",
@@ -193,7 +195,6 @@ mod render {
 
         for i in 0..hi {
             e.move_rc(r + 1 + i, c);
-            //e.print_char('│');
             e.print_char('|');
             e.move_rc(r + 1 + i, c + wi + 1);
             e.print_char('|');
@@ -211,28 +212,28 @@ mod render {
 
     fn render_display(e: &mut EasyCurses, d: &display::Screen, cfg: &Config) {
         let (r, c) = cfg.display_position();
-        for y in 0..display::ROWS {
-            for x in 0..display::COLS {
-                let bit = d.get(x as u8, y as u8);
-                //let bit = (x + y) > 10 && (x + y) < 50;
-                let z = if bit { cfg.present } else { cfg.absent };
-                let row = r + y as i32;
-                let col = c + x as i32;
-                e.set_color_pair(if bit {
-                    cfg.color_present
+        for y in 0i32..display::ROWS as i32 {
+            for x in 0i32..display::COLS as i32 {
+                let bit = d.get(x as usize, y as usize);
+                let (z, cp) = if bit {
+                    (cfg.present, cfg.color_present)
                 } else {
-                    cfg.color_absent
-                });
+                    (cfg.absent, cfg.color_absent)
+                };
+                let row = r + y;
+                let col = c + x;
+                e.set_color_pair(cp);
                 e.move_rc(row, col);
                 e.print_char(z);
             }
         }
     }
 
-    fn render_step(e: &mut EasyCurses, step: i32, cfg: &Config) {
+    fn render_step(e: &mut EasyCurses, step: u64, fps: u64, cfg: &Config) {
         let (r, c) = cfg.step_position();
         e.move_rc(r, c);
-        e.print(step.to_string());
+        let s = format!("Frame {}, fps: {}", step, fps);
+        e.print(s);
     }
 
     fn render_dt_st(e: &mut EasyCurses, dt_st: (u8, u8), cfg: &Config) {
@@ -244,12 +245,13 @@ mod render {
     }
 
     pub(crate) fn chip_loop(ch: &mut emulator::Emulator, c: &Config, rm: RunMode) {
-        let mut step_count = 0;
+        let mut step_count = 0u64;
         let mut oldk: Option<usize> = None;
         let mut next_instr = ch.fetch();
+        let start_of_prog = Instant::now();
 
         let frame_target_duration = Duration::new(1, 0)
-            .checked_div(60)
+            .checked_div(120)
             .expect("failed when rhs!=0, what?");
 
         if let Some(mut e) = EasyCurses::initialize_system() {
@@ -268,8 +270,11 @@ mod render {
                 render_cpu(&mut e, &(*ch).cpu, c);
                 render_display(&mut e, &(*ch).scr, c);
                 render_keyboard(&mut e, &ch.kbd, c);
-                render_step(&mut e, step_count, c);
-
+                if let Some(fps) = step_count.checked_div(start_of_prog.elapsed().as_secs()) {
+                    render_step(&mut e, step_count, fps, c);
+                    step_count += 1;
+                }
+                render_dt_st(&mut e, ch.tick(), c);
                 e.refresh();
 
                 //                if wait_for_key(&rm, next_instr) {
@@ -284,9 +289,11 @@ mod render {
                         }
                         _ => (),
                     }
+                } else {
+                    ch.key_released();
+                    oldk = None;
                 }
 
-                step_count += 1;
                 if let Some(instr) = next_instr {
                     ch.exec(instr);
                     next_instr = ch.fetch();
@@ -297,8 +304,6 @@ mod render {
                 {
                     sleep(frame_remaining);
                 }
-
-                render_dt_st(&mut e, ch.tick(), c);
             }
         }
     }
@@ -314,11 +319,12 @@ mod render {
             x0: 3,
             y0: 3,
             cpu_width: 40,
-            cpu_height: 25,
+            cpu_height: 26,
             kbd_height: 5,
         }
     }
 }
+
 mod mode {
     #[derive(Debug, PartialEq)]
     pub(crate) enum RunMode {
@@ -345,7 +351,6 @@ mod run {
     pub(crate) fn emulation(ch: &mut emulator::Emulator, fname: &str, runmode: RunMode) {
         loader::load(ch, &String::from(fname));
         ch.store_font();
-
         render::chip_loop(ch, &render::default_config(), runmode);
     }
 
@@ -373,7 +378,6 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     if let Some(fname) = &args.get(1) {
         let mut c = emulator::Emulator::new();
-
         let runmode: RunMode = RunMode::from(args.get(2));
         run::emulation(&mut c, fname, runmode);
     } else {
