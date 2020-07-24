@@ -249,10 +249,14 @@ mod render {
         let mut oldk: Option<usize> = None;
         let mut next_instr = ch.fetch();
         let start_of_prog = Instant::now();
+        let mut last_input = Instant::now();
 
         let frame_target_duration = Duration::new(1, 0)
             .checked_div(120)
-            .expect("failed when rhs!=0, what?");
+            .expect("duration division failed");
+        let min_press_durarion = Duration::new(1, 0)
+            .checked_div(10)
+            .expect("min_press_durarion failed");
 
         if let Some(mut e) = EasyCurses::initialize_system() {
             e.set_cursor_visibility(CursorVisibility::Invisible);
@@ -277,8 +281,8 @@ mod render {
                 render_dt_st(&mut e, ch.tick(), c);
                 e.refresh();
 
-                //                if wait_for_key(&rm, next_instr) {
                 if let Some(ip) = e.get_input() {
+                    last_input = Instant::now();
                     match ip {
                         Input::Character(',') => break,
                         Input::Character(key) => {
@@ -290,10 +294,11 @@ mod render {
                         _ => (),
                     }
                 } else {
-                    ch.key_released();
-                    oldk = None;
+                    if let None = min_press_durarion.checked_sub(last_input.elapsed()) {
+                        ch.key_released();
+                        oldk = None;
+                    }
                 }
-
                 if let Some(instr) = next_instr {
                     ch.exec(instr);
                     next_instr = ch.fetch();
@@ -314,8 +319,8 @@ mod render {
             absent: ' ',
             color_present: ColorPair::new(Yellow, Black),
             color_absent: ColorPair::new(Blue, Black),
-            display_width: 64,
-            display_height: 32,
+            display_width: display::COLS as i32,
+            display_height: display::ROWS as i32,
             x0: 3,
             y0: 3,
             cpu_width: 40,
