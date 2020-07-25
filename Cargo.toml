@@ -8,4 +8,4 @@ edition = "2018"
 
 [dependencies]
 easycurses="0.13.0"
-libchip8 = {path = "../libchip8"}
+libchip8 = {git = "https://github.com/kamchy/libchip8.git"}
