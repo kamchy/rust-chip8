@@ -255,7 +255,7 @@ mod render {
             .checked_div(120)
             .expect("duration division failed");
         let min_press_durarion = Duration::new(1, 0)
-            .checked_div(10)
+            .checked_div(20)
             .expect("min_press_durarion failed");
 
         if let Some(mut e) = EasyCurses::initialize_system() {
