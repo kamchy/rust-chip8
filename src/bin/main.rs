@@ -75,6 +75,10 @@ mod render {
             let (r, c) = self.step_position();
             (r + 1, c)
         }
+        fn status_position(&self) -> (i32, i32) {
+            let (r, c) = self.dt_st_position();
+            (r + 1, c)
+        }
     }
 
     fn render_line(e: &mut EasyCurses, cp: ColorPair, s: String) {
@@ -244,6 +248,12 @@ mod render {
         e.print(format!("Delay: {:5}, Sound time: {:5}", dt, st));
     }
 
+    fn render_status(e: &mut EasyCurses, s: &str, cfg: &Config) {
+        let (r, c) = cfg.status_position();
+        e.move_rc(r, c);
+        part_str(e, "Status", s.to_string());
+    }
+
     pub(crate) fn chip_loop(ch: &mut emulator::Emulator, c: &Config, rm: RunMode) {
         let mut step_count = 0u64;
         let mut oldk: Option<usize> = None;
@@ -299,9 +309,13 @@ mod render {
                         oldk = None;
                     }
                 }
+
                 if let Some(instr) = next_instr {
                     ch.exec(instr);
                     next_instr = ch.fetch();
+                } else {
+                    render_status(&mut e, "No more instructions to excute", &c);
+                    break;
                 }
 
                 let elapsed_this_frame = top_of_loop.elapsed();
@@ -310,6 +324,9 @@ mod render {
                     sleep(frame_remaining);
                 }
             }
+
+            e.set_input_timeout(TimeoutMode::Never);
+            e.get_input();
         }
     }
 
