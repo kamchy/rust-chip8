@@ -2,6 +2,7 @@ mod render {
 
     use libchip8::cpu;
     use libchip8::display;
+
     use libchip8::emulator;
     use libchip8::input;
 
@@ -214,7 +215,7 @@ mod render {
         e.print_char('>');
     }
 
-    fn render_display(e: &mut EasyCurses, d: &display::Screen, cfg: &Config) {
+    fn render_display(e: &mut EasyCurses, d: &dyn display::Scr, cfg: &Config) {
         let (r, c) = cfg.display_position();
         for y in 0i32..display::ROWS as i32 {
             for x in 0i32..display::COLS as i32 {
@@ -282,7 +283,7 @@ mod render {
             loop {
                 let top_of_loop = Instant::now();
                 render_cpu(&mut e, &(*ch).cpu, c);
-                render_display(&mut e, &(*ch).scr, c);
+                render_display(&mut e, (*ch).scr.as_ref(), c);
                 render_keyboard(&mut e, &ch.kbd, c);
                 if let Some(fps) = step_count.checked_div(start_of_prog.elapsed().as_secs()) {
                     render_step(&mut e, step_count, fps, c);
@@ -399,9 +400,9 @@ use std::env;
 fn main() {
     let args: Vec<String> = env::args().collect();
     if let Some(fname) = &args.get(1) {
-        let mut c = emulator::Emulator::new();
+        let mut emulator = emulator::Emulator::new();
         let runmode: RunMode = RunMode::from(args.get(2));
-        run::emulation(&mut c, fname, runmode);
+        run::emulation(&mut emulator, fname, runmode);
     } else {
         println!("chip-8 rom file name required");
     }
