@@ -60,7 +60,7 @@ mod render {
 
         fn frame_position(&self) -> (i32, i32) {
             let (r, c) = self.cpu_position();
-            (r, c + self.cpu_width + 5)
+            (r, c + self.cpu_width + 7)
         }
 
         fn keyboard_position(&self) -> (i32, i32) {
@@ -83,6 +83,215 @@ mod render {
         }
     }
 
+    pub trait Renderer {
+        fn render_cpu(&mut self, cpu: &cpu::CPU);
+        fn render_display(&mut self, d: &dyn display::Scr);
+        fn render_keyboard(&mut self, kbd: &input::Keyboard);
+        fn render_dt_st(&mut self, dt_st: (u8, u8));
+        fn render_status(&mut self, s: &str);
+        fn render_frame(&mut self);
+        fn render_step(&mut self, step: u64, fps: u64);
+        fn wait_to_quit(&mut self, s: &str);
+    }
+
+    pub struct EasyCursesRenderer<'s> {
+        e: &'s mut EasyCurses,
+        cfg: &'s Config,
+    }
+
+    impl<'s> EasyCursesRenderer<'s> {
+        fn new(e: &'s mut EasyCurses, cfg: &'s Config, rm: RunMode) -> Self {
+            e.set_cursor_visibility(CursorVisibility::Invisible);
+            e.set_echo(false);
+            e.set_input_mode(InputMode::Character);
+            let tm = match rm {
+                RunMode::Stepwise => TimeoutMode::Never,
+                RunMode::Normal => TimeoutMode::Immediate,
+            };
+            e.set_input_timeout(tm);
+            EasyCursesRenderer { e, cfg }
+        }
+
+        fn refresh(&mut self) {
+            self.e.refresh();
+        }
+
+        fn handle_input(
+            &mut self,
+            ch: &mut emulator::Emulator,
+            last_input: &mut Instant,
+            min_press_durarion: &Duration,
+            oldk: &mut Option<usize>,
+        ) -> bool {
+            let mut result = true;
+            if let Some(ip) = self.e.get_input() {
+                *last_input = Instant::now();
+                match ip {
+                    Input::Character(',') => result = false,
+                    Input::Character(key) => {
+                        if let Some(newk) = key_map::map_key_to_base16(key) {
+                            ch.key_pressed(oldk.take(), newk);
+                            oldk.replace(newk);
+                        }
+                    }
+                    _ => (),
+                }
+            } else {
+                if let None = min_press_durarion.checked_sub(last_input.elapsed()) {
+                    ch.key_released();
+                    oldk.take();
+                }
+            }
+            result
+        }
+    }
+
+    impl<'s> Renderer for EasyCursesRenderer<'s> {
+        fn render_cpu(&mut self, cpu: &cpu::CPU) {
+            let cfg = self.cfg;
+            let e = &mut self.e;
+            let (mut r, c) = cfg.cpu_position();
+
+            e.move_rc(r, c);
+            part(e, "PC", cpu.pc);
+
+            r += 1;
+
+            e.move_rc(r, c);
+            part(e, "I", cpu.i);
+
+            r += 1;
+            e.move_rc(r, c);
+            part(e, "SP", cpu.sp);
+
+            r += 4;
+            for i in 0..0x10 {
+                r += 1;
+                e.move_rc(r, c);
+                part(e, &format!("V{:01X}", i), cpu.regs[i as usize].into());
+            }
+
+            r += 2;
+            e.move_rc(r, c);
+            part(
+                e,
+                "instruction",
+                if let Some(ref op) = cpu.instr {
+                    op.to_instr()
+                } else {
+                    0
+                },
+            );
+
+            r += 1;
+            e.move_rc(r, c);
+            render_labelled(
+                e,
+                "opcode",
+                &format!("{:?}", cpu.instr),
+                cfg.cpu_width as usize,
+            );
+        }
+
+        fn render_display(&mut self, d: &dyn display::Scr) {
+            let cfg = &self.cfg;
+            let e = &mut self.e;
+            let (r, c) = cfg.display_position();
+            for y in 0i32..display::ROWS as i32 {
+                for x in 0i32..display::COLS as i32 {
+                    let bit = d.get(x as usize, y as usize);
+                    let (z, cp) = if bit {
+                        (cfg.present, cfg.color_present)
+                    } else {
+                        (cfg.absent, cfg.color_absent)
+                    };
+                    let row = r + y;
+                    let col = c + x;
+                    e.set_color_pair(cp);
+                    e.move_rc(row, col);
+                    e.print_char(z);
+                }
+            }
+        }
+
+        fn render_keyboard(&mut self, kbd: &input::Keyboard) {
+            let cfg = &self.cfg;
+            let e = &mut self.e;
+            let (r, c) = cfg.keyboard_position();
+            render_kbd_line(e, r, c, [1, 2, 3, 0xC], kbd, cfg);
+            render_kbd_line(e, r + 1, c, [4, 5, 6, 0xD], kbd, cfg);
+            render_kbd_line(e, r + 2, c, [7, 8, 9, 0xE], kbd, cfg);
+            render_kbd_line(e, r + 3, c, [0xA, 0, 0xB, 0xF], kbd, cfg);
+        }
+
+        fn render_dt_st(&mut self, dt_st: (u8, u8)) {
+            let cfg = &self.cfg;
+            let e = &mut self.e;
+            let (r, c) = cfg.dt_st_position();
+            e.move_rc(r, c);
+
+            let (dt, st) = dt_st;
+            e.print(format!("Delay: {:5}, Sound time: {:5}", dt, st));
+        }
+
+        fn render_status(&mut self, s: &str) {
+            let cfg = &self.cfg;
+            let e = &mut self.e;
+            let (r, c) = cfg.status_position();
+            e.move_rc(r, c);
+            let label = "Status";
+            part_str(e, label, format!("{:1$}", s, cfg.cpu_width as usize));
+        }
+
+        fn render_frame(&mut self) {
+            let cfg = &self.cfg;
+            let e = &mut self.e;
+            let (r, c) = cfg.frame_position();
+            let wi = cfg.display_width;
+            let hi = cfg.display_height;
+
+            e.move_rc(r, c);
+            e.print_char('<');
+            for i in 0..wi {
+                e.move_rc(r, c + 1 + i);
+                e.print_char('-');
+            }
+            e.move_rc(r, c + wi + 1);
+            e.print_char('>');
+
+            for i in 0..hi {
+                e.move_rc(r + 1 + i, c);
+                e.print_char('|');
+                e.move_rc(r + 1 + i, c + wi + 1);
+                e.print_char('|');
+            }
+
+            e.move_rc(r + hi + 1, c);
+            e.print_char('<');
+            for i in 0..wi {
+                e.move_rc(r + hi + 1, c + 1 + i);
+                e.print_char('-');
+            }
+            e.move_rc(r + hi + 1, c + wi + 1);
+            e.print_char('>');
+        }
+
+        fn render_step(&mut self, step: u64, fps: u64) {
+            let cfg = &self.cfg;
+            let e = &mut self.e;
+            let (r, c) = cfg.step_position();
+            e.move_rc(r, c);
+            let s = format!("Frame {}, fps: {}", step, fps);
+            e.print(s);
+        }
+
+        fn wait_to_quit(&mut self, s: &str) {
+            self.render_status(s);
+            self.e.set_input_timeout(TimeoutMode::Never);
+            self.e.get_input();
+        }
+    }
+
     fn render_line(e: &mut EasyCurses, cp: ColorPair, s: String) {
         e.set_color_pair(cp);
         e.print(s);
@@ -93,21 +302,11 @@ mod render {
     }
 
     fn render_labelled(e: &mut EasyCurses, label: &str, s: &str, max_width: usize) {
-        let lab = format!("{label:10} ", label = label);
-        let lablen = lab.len();
-        render_line(e, colorpair!(Green on Black), lab);
-
-        let mut s = String::from(s);
-        s.push_str(&" ".repeat(std::cmp::max(0, max_width - (s.len() + lablen))));
-        render_line(e, colorpair!(Yellow on Black), s);
+        part_str(e, label, format!("{:1$}", s, max_width - label.len()));
     }
 
     fn part_str(e: &mut EasyCurses, label: &str, s: String) {
-        render_line(
-            e,
-            colorpair!(Green on Black),
-            format!("{label:10} ", label = label),
-        );
+        render_line(e, colorpair!(Green on Black), format!("{0:3} ", label));
         render_line(e, colorpair!(Yellow on Black), s);
     }
 
@@ -133,130 +332,7 @@ mod render {
         }
     }
 
-    fn render_keyboard(e: &mut EasyCurses, kbd: &input::Keyboard, cfg: &Config) {
-        let (r, c) = cfg.keyboard_position();
-        render_kbd_line(e, r, c, [1, 2, 3, 0xC], kbd, cfg);
-        render_kbd_line(e, r + 1, c, [4, 5, 6, 0xD], kbd, cfg);
-        render_kbd_line(e, r + 2, c, [7, 8, 9, 0xE], kbd, cfg);
-        render_kbd_line(e, r + 3, c, [0xA, 0, 0xB, 0xF], kbd, cfg);
-    }
-
-    fn render_cpu(e: &mut EasyCurses, cpu: &cpu::CPU, cfg: &Config) {
-        let (mut r, c) = cfg.cpu_position();
-
-        e.move_rc(r, c);
-        part(e, "PC", cpu.pc);
-
-        r += 1;
-
-        e.move_rc(r, c);
-        part(e, "I", cpu.i);
-
-        r += 1;
-        e.move_rc(r, c);
-        part(e, "SP", cpu.sp);
-
-        r += 4;
-        for i in 0..0x10 {
-            r += 1;
-            e.move_rc(r, c);
-            part(e, &format!("V{:01X}", i), cpu.regs[i as usize].into());
-        }
-
-        r += 2;
-        e.move_rc(r, c);
-        part(
-            e,
-            "instruction",
-            if let Some(ref op) = cpu.instr {
-                op.to_instr()
-            } else {
-                0
-            },
-        );
-
-        r += 1;
-        e.move_rc(r, c);
-        render_labelled(
-            e,
-            "opcode",
-            &format!("{:?}", cpu.instr),
-            cfg.cpu_width as usize,
-        );
-    }
-
-    fn render_frame(e: &mut EasyCurses, conf: &Config) {
-        let (r, c) = conf.frame_position();
-        let wi = conf.display_width;
-        let hi = conf.display_height;
-
-        e.move_rc(r, c);
-        e.print_char('<');
-        for i in 0..wi {
-            e.move_rc(r, c + 1 + i);
-            e.print_char('-');
-        }
-        e.move_rc(r, c + wi + 1);
-        e.print_char('>');
-
-        for i in 0..hi {
-            e.move_rc(r + 1 + i, c);
-            e.print_char('|');
-            e.move_rc(r + 1 + i, c + wi + 1);
-            e.print_char('|');
-        }
-
-        e.move_rc(r + hi + 1, c);
-        e.print_char('<');
-        for i in 0..wi {
-            e.move_rc(r + hi + 1, c + 1 + i);
-            e.print_char('-');
-        }
-        e.move_rc(r + hi + 1, c + wi + 1);
-        e.print_char('>');
-    }
-
-    fn render_display(e: &mut EasyCurses, d: &dyn display::Scr, cfg: &Config) {
-        let (r, c) = cfg.display_position();
-        for y in 0i32..display::ROWS as i32 {
-            for x in 0i32..display::COLS as i32 {
-                let bit = d.get(x as usize, y as usize);
-                let (z, cp) = if bit {
-                    (cfg.present, cfg.color_present)
-                } else {
-                    (cfg.absent, cfg.color_absent)
-                };
-                let row = r + y;
-                let col = c + x;
-                e.set_color_pair(cp);
-                e.move_rc(row, col);
-                e.print_char(z);
-            }
-        }
-    }
-
-    fn render_step(e: &mut EasyCurses, step: u64, fps: u64, cfg: &Config) {
-        let (r, c) = cfg.step_position();
-        e.move_rc(r, c);
-        let s = format!("Frame {}, fps: {}", step, fps);
-        e.print(s);
-    }
-
-    fn render_dt_st(e: &mut EasyCurses, dt_st: (u8, u8), cfg: &Config) {
-        let (r, c) = cfg.dt_st_position();
-        e.move_rc(r, c);
-
-        let (dt, st) = dt_st;
-        e.print(format!("Delay: {:5}, Sound time: {:5}", dt, st));
-    }
-
-    fn render_status(e: &mut EasyCurses, s: &str, cfg: &Config) {
-        let (r, c) = cfg.status_position();
-        e.move_rc(r, c);
-        part_str(e, "Status", s.to_string());
-    }
-
-    pub(crate) fn chip_loop(ch: &mut emulator::Emulator, c: &Config, rm: RunMode) {
+    pub(crate) fn chip_loop<'s>(ch: &mut emulator::Emulator, c: &'s Config, rm: RunMode) {
         let mut step_count = 0u64;
         let mut oldk: Option<usize> = None;
         let mut next_instr = ch.fetch();
@@ -271,52 +347,30 @@ mod render {
             .expect("min_press_durarion failed");
 
         if let Some(mut e) = EasyCurses::initialize_system() {
-            e.set_cursor_visibility(CursorVisibility::Invisible);
-            e.set_echo(false);
-            e.set_input_mode(InputMode::Character);
-            let tm = match rm {
-                RunMode::Stepwise => TimeoutMode::Never,
-                RunMode::Normal => TimeoutMode::Immediate,
-            };
-            e.set_input_timeout(tm);
-            render_frame(&mut e, c);
-
+            let mut er = EasyCursesRenderer::new(&mut e, c, rm);
+            er.render_frame();
+            er.render_status("Press ',' (colon) to stop emulation.");
             loop {
                 let top_of_loop = Instant::now();
-                render_cpu(&mut e, &(*ch).cpu, c);
-                render_display(&mut e, (*ch).scr.as_ref(), c);
-                render_keyboard(&mut e, &ch.kbd, c);
+                er.render_cpu(&(*ch).cpu);
+                er.render_display((*ch).scr.as_ref());
+                er.render_keyboard(&ch.kbd);
                 if let Some(fps) = step_count.checked_div(start_of_prog.elapsed().as_secs()) {
-                    render_step(&mut e, step_count, fps, c);
+                    er.render_step(step_count, fps);
                     step_count += 1;
                 }
-                render_dt_st(&mut e, ch.tick(), c);
-                e.refresh();
+                er.render_dt_st(ch.tick());
+                er.refresh();
 
-                if let Some(ip) = e.get_input() {
-                    last_input = Instant::now();
-                    match ip {
-                        Input::Character(',') => break,
-                        Input::Character(key) => {
-                            if let Some(newk) = key_map::map_key_to_base16(key) {
-                                ch.key_pressed(oldk, newk);
-                                oldk = Some(newk);
-                            }
-                        }
-                        _ => (),
-                    }
-                } else {
-                    if let None = min_press_durarion.checked_sub(last_input.elapsed()) {
-                        ch.key_released();
-                        oldk = None;
-                    }
+                if !er.handle_input(ch, &mut last_input, &min_press_durarion, &mut oldk) {
+                    break;
                 }
 
                 if let Some(instr) = next_instr {
                     ch.exec(instr);
                     next_instr = ch.fetch();
                 } else {
-                    render_status(&mut e, "No more instructions to excute", &c);
+                    er.render_status("No more instructions to excute");
                     break;
                 }
 
@@ -327,8 +381,9 @@ mod render {
                 }
             }
 
-            e.set_input_timeout(TimeoutMode::Never);
-            e.get_input();
+            er.wait_to_quit("Press any key to quit");
+        } else {
+            println!("Could not initialize easycurses system properly");
         }
     }
 
@@ -375,6 +430,7 @@ mod run {
     pub(crate) fn emulation(ch: &mut emulator::Emulator, fname: &str, runmode: RunMode) {
         loader::load(ch, &String::from(fname));
         ch.store_font();
+
         render::chip_loop(ch, &render::default_config(), runmode);
     }
 
