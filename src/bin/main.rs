@@ -1,35 +1,36 @@
+/// Maps 16-keys chip-8 keyboard to contemporary keyboard layout
+mod key_map {
+    /// i-th character represents key which - when pressed - is mapped to key i in chip-8 kbd
+    const MAPPING: &'static str = "x123qweasdzc4rfv";
+
+    pub(crate) fn map_base16_to_key(idx: usize) -> Option<char> {
+        MAPPING.chars().nth(idx)
+    }
+
+    pub(crate) fn map_key_to_base16(k: char) -> Option<usize> {
+        MAPPING
+            .char_indices()
+            .find(|(_, c)| *c == k)
+            .map(|(idx, _)| idx)
+    }
+}
+
 mod render {
 
     use libchip8::cpu;
     use libchip8::display;
-
     use libchip8::emulator;
     use libchip8::input;
 
     use easycurses::Color::*;
     use easycurses::*;
 
+    use crate::key_map;
     use crate::mode::RunMode;
+
     use std::thread::sleep;
     use std::time::Duration;
     use std::time::Instant;
-
-    /// Maps 16-keys chip-8 keyboard to contemporary keyboard layout
-    mod key_map {
-        /// i-th character represents key which - when pressed - is mapped to key i in chip-8 kbd
-        const MAPPING: &'static str = "x123qweasdzc4rfv";
-
-        pub(crate) fn map_base16_to_key(idx: usize) -> Option<char> {
-            MAPPING.chars().nth(idx)
-        }
-
-        pub(crate) fn map_key_to_base16(k: char) -> Option<usize> {
-            MAPPING
-                .char_indices()
-                .find(|(_, c)| *c == k)
-                .map(|(idx, _)| idx)
-        }
-    }
 
     pub struct Config {
         present: char,
